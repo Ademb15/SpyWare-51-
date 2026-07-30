@@ -1,1 +1,234 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>كاميرا - تعليمي</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Segoe UI', Arial, sans-serif;
+      background: #0f172a;
+      color: #f1f5f9;
+      text-align: center;
+      padding: 12px;
+      min-height: 100vh;
+    }
+    h1 { font-size: 22px; margin: 8px 0; color: #38bdf8; }
+    .sub { color: #64748b; font-size: 13px; margin-bottom: 10px; }
+    #status {
+      background: #1e293b;
+      padding: 8px 12px;
+      border-radius: 6px;
+      margin: 8px auto;
+      font-size: 13px;
+      max-width: 500px;
+      direction: ltr;
+    }
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      justify-content: center;
+      margin: 12px 0;
+    }
+    .controls button {
+      padding: 9px 16px;
+      font-size: 13px;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      background: #2563eb;
+      color: white;
+      font-weight: 600;
+    }
+    .controls button:active { transform: scale(0.95); }
+    .green { background: #16a34a !important; }
+    .red { background: #dc2626 !important; }
+    .orange { background: #f59e0b !important; color: #1e293b !important; }
+    .controls button:disabled { opacity: 0.4; }
+    .vid-box {
+      width: 100%; max-width: 500px;
+      margin: 8px auto;
+      background: #000;
+      border-radius: 10px;
+      overflow: hidden;
+      border: 2px solid #334155;
+      position: relative;
+    }
+    .vid-box video { width: 100%; display: block; background: #000; }
+    .label {
+      position: absolute; top: 6px; right: 6px;
+      background: rgba(0,0,0,0.7); color: #38bdf8;
+      padding: 3px 8px; border-radius: 4px; font-size: 11px;
+    }
+    #gallery {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(90px, 1fr));
+      gap: 6px; margin: 8px 0;
+    }
+    #gallery img {
+      width: 100%; border-radius: 4px; border: 2px solid #334155;
+    }
+    .remote { margin-top: 20px; padding-top: 15px; border-top: 2px solid #334155; }
+    canvas { display: none; }
+  </style>
+</head>
+<body>
 
+  <h1>📷 معمل الكاميرا</h1>
+  <p class="sub">للتعليم — اختبر على أجهزتك الخاصة</p>
+  <div id="status">⏳ الإتصال...</div>
+
+  <div class="controls">
+    <button onclick="startCam()">📷 إفتح</button>
+    <button onclick="switchCam()" class="orange">🔄 بدّل</button>
+    <button onclick="takePic()" class="green">📸 صورة</button>
+    <button onclick="toggleRec()" id="recBtn">⏺️ تسجيل</button>
+    <button onclick="stopCam()" class="red" id="stopBtn" disabled>⏹ إطفى</button>
+  </div>
+
+  <div class="vid-box">
+    <video id="myVideo" autoplay muted playsinline></video>
+    <div class="label">📹 كاميرتي</div>
+  </div>
+
+  <h3 style="font-size:15px;margin:10px 0 5px;">📸 الصور</h3>
+  <div id="gallery"></div>
+
+  <div class="remote">
+    <h3 style="font-size:15px;margin-bottom:8px;">📡 البث من التلفون الآخر</h3>
+    <div class="vid-box">
+      <video id="otherVideo" autoplay playsinline></video>
+      <div class="label">📺 التلفون الآخر</div>
+    </div>
+  </div>
+
+  <canvas id="cvs"></canvas>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const socket = io();
+    let stream = null;
+    let mode = 'user';
+    let rec = null;
+    let chunks = [];
+    let recOn = false;
+    let interval = null;
+
+    const myV = document.getElementById('myVideo');
+    const otherV = document.getElementById('otherVideo');
+    const cvs = document.getElementById('cvs');
+    const st = document.getElementById('status');
+    const recBtn = document.getElementById('recBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    const gal = document.getElementById('gallery');
+
+    function setStatus(m, err) { st.textContent = m; st.style.color = err ? '#f87171' : '#f1f5f9'; }
+
+    async function startCam() {
+      try {
+        setStatus('📷 جاري...');
+        if (stream) stopCam();
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: mode, width: { ideal: 1280 }, height: { ideal: 720 } },
+          audio: true
+        });
+        myV.srcObject = stream;
+        setStatus(`✅ ${mode === 'user' ? 'قدامي' : 'خلفي'}`);
+        stopBtn.disabled = false;
+        startBroadcast();
+      } catch (e) {
+        setStatus(`❌ ${e.message}`, true);
+      }
+    }
+
+    async function switchCam() {
+      mode = mode === 'user' ? 'environment' : 'user';
+      if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; clearInterval(interval); await startCam(); }
+    }
+
+    function takePic() {
+      if (!stream || !stream.active) { setStatus('❌ إفتح الكاميرا أولاً', true); return; }
+      const t = stream.getVideoTracks()[0];
+      const s = t.getSettings();
+      cvs.width = s.width || 640; cvs.height = s.height || 480;
+      const ctx = cvs.getContext('2d');
+      if (mode === 'user') { ctx.translate(cvs.width, 0); ctx.scale(-1, 1); }
+      ctx.drawImage(myV, 0, 0);
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      const d = cvs.toDataURL('image/png');
+      const img = document.createElement('img'); img.src = d; img.onclick = () => window.open(d);
+      gal.prepend(img);
+      socket.emit('video-frame', { type: 'photo', data: d });
+      setStatus('📸 تم');
+    }
+
+    function toggleRec() {
+      if (!stream || !stream.active) { setStatus('❌ إفتح الكاميرا أولاً', true); return; }
+      if (recOn) { rec.stop(); return; }
+      chunks = [];
+      const types = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'];
+      let mt = '';
+      for (const t of types) { if (MediaRecorder.isTypeSupported(t)) { mt = t; break; } }
+      if (!mt) { setStatus('❌ التسجيل غير مدعوم', true); return; }
+      rec = new MediaRecorder(stream, { mimeType: mt });
+      rec.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
+      rec.onstop = () => {
+        const b = new Blob(chunks, { type: mt });
+        const u = URL.createObjectURL(b);
+        const a = document.createElement('a'); a.href = u; a.download = `vid_${Date.now()}.webm`;
+        a.click(); URL.revokeObjectURL(u);
+        setStatus('✅ التسجيل محفوظ');
+        recBtn.textContent = '⏺️ تسجيل'; recBtn.className = ''; recOn = false;
+      };
+      rec.start(1000);
+      recOn = true;
+      recBtn.textContent = '⏹️ أوقف'; recBtn.className = 'red';
+      setStatus('⏺️ جاري التسجيل...');
+    }
+
+    function stopCam() {
+      if (stream) { stream.getTracks().forEach(t => { t.stop(); t.enabled = false; }); stream = null; }
+      myV.srcObject = null;
+      clearInterval(interval); interval = null;
+      stopBtn.disabled = true;
+      if (recOn) { rec.stop(); }
+      setStatus('⏹️ مقفولة');
+    }
+
+    function startBroadcast() {
+      clearInterval(interval);
+      interval = setInterval(() => {
+        if (!stream || !stream.active) return;
+        const t = stream.getVideoTracks()[0]; if (!t || !t.enabled) return;
+        const s = t.getSettings();
+        cvs.width = Math.min(s.width || 640, 320); cvs.height = Math.min(s.height || 480, 240);
+        const ctx = cvs.getContext('2d');
+        if (mode === 'user') { ctx.translate(cvs.width, 0); ctx.scale(-1, 1); }
+        ctx.drawImage(myV, 0, 0, cvs.width, cvs.height);
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        socket.emit('video-frame', { type: 'stream', data: cvs.toDataURL('image/jpeg', 0.4) });
+      }, 500);
+    }
+
+    socket.on('video-frame', d => {
+      if (d.type === 'photo') {
+        const img = document.createElement('img');
+        img.src = d.data; img.onclick = () => window.open(d.data);
+        gal.prepend(img);
+      } else if (d.type === 'stream') {
+        otherV.src = d.data;
+      }
+    });
+
+    socket.on('your-id', id => {
+      setStatus(`✅ متصل — ID: ${id.substring(0,8)}...`);
+    });
+    socket.on('connect', () => setStatus('✅ متصل'));
+    socket.on('disconnect', () => setStatus('❌ قطع', true));
+    socket.on('connect_error', e => setStatus(`❌ ${e.message}`, true));
+    setStatus('✅ جاهز — إضغط "إفتح"');
+  </script>
+</body>
+      </html>
